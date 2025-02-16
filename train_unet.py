@@ -19,7 +19,7 @@ def parse_args():
                         help='directory to save results')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='batch size for training')
-    parser.add_argument('--num_epochs', type=int, default=100,
+    parser.add_argument('--num_epochs', type=int, default=10,
                         help='number of epochs to train')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='number of worker threads for data loading')

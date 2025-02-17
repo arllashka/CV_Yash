@@ -5,6 +5,8 @@ import os
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import numpy as np
+import argparse
+from datetime import datetime
 
 from dataset import PetSegmentationDataset
 from models import UNet
@@ -12,10 +14,35 @@ from trainer import SegmentationTrainer
 from utils import plot_training_history, save_predictions, evaluate_and_save_metrics
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train UNet for Pet Segmentation')
+    parser.add_argument('--data_root', type=str, default='./Dataset',
+                        help='path to dataset')
+    parser.add_argument('--save_dir', type=str, default='./results',
+                        help='directory to save results')
+    parser.add_argument('--batch_size', type=int, default=8,
+                        help='batch size for training')
+    parser.add_argument('--num_epochs', type=int, default=50,
+                        help='number of epochs to train')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='number of worker threads for data loading')
+    parser.add_argument('--learning_rate', type=float, default=3e-4,
+                        help='learning rate')
+    parser.add_argument('--patience', type=int, default=10,
+                        help='patience for early stopping')
+    return parser.parse_args()
+
+
 def main():
-    # Create save directory
-    save_dir = './final_results'
+    # Parse arguments
+    args = parse_args()
+
+    # Create save directory with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    save_dir = os.path.join(args.save_dir, f'unet_{timestamp}')
     os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(os.path.join(save_dir, 'models'), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, 'predictions'), exist_ok=True)
 
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -23,35 +50,55 @@ def main():
 
     # Create datasets
     train_dataset = PetSegmentationDataset(
-        './Dataset',
+        args.data_root,
         split='train',
         img_size=(256, 256),
         augment=True
     )
 
     val_dataset = PetSegmentationDataset(
-        './Dataset',
+        args.data_root,
         split='val',
         img_size=(256, 256),
         augment=False
     )
 
     test_dataset = PetSegmentationDataset(
-        './Dataset',
+        args.data_root,
         split='test',
         img_size=(256, 256),
         augment=False
     )
 
     # Create dataloaders
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True
+    )
 
     # Create model and training components
     model = UNet(n_channels=3, n_classes=3).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     # Create trainer
     trainer = SegmentationTrainer(
@@ -67,11 +114,11 @@ def main():
     history = trainer.train(
         train_loader=train_loader,
         val_loader=val_loader,
-        num_epochs=50,
-        early_stopping_patience=10
+        num_epochs=args.num_epochs,
+        early_stopping_patience=args.patience
     )
 
-    # Save only the best validation loss plot
+    # Save validation loss plot
     plt.figure(figsize=(10, 5))
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.title('Validation Loss During Training')
@@ -86,7 +133,7 @@ def main():
     checkpoint = torch.load(best_model_path)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    # Evaluate and save best predictions for cats and dogs
+    # Find and save best predictions
     print("\nFinding best predictions for cats and dogs...")
     model.eval()
     with torch.no_grad():
@@ -131,9 +178,6 @@ def main():
         print(f"\nFound {len(cat_predictions)} cat images and {len(dog_predictions)} dog images")
         print(f"Best cat IoU: {cat_samples[0][0]:.4f}")
         print(f"Best dog IoU: {dog_samples[0][0]:.4f}")
-
-        # Save predictions for both cats and dogs
-        os.makedirs(os.path.join(save_dir, 'predictions'), exist_ok=True)
 
         def save_prediction(sample, prefix):
             iou, image, mask, pred, filename = sample

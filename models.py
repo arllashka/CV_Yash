@@ -48,50 +48,176 @@ class UNet(nn.Module):
 
         self.conv10 = nn.Conv2d(64, n_classes, kernel_size=1)
 
-    def _init_weights(self):
-        """Initialize weights using He initialization"""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Encoding path
-        conv1 = self.conv1(x)  # 64
-        pool1 = self.pool(conv1)  # 64
+        conv1 = self.conv1(x)
+        pool1 = self.pool(conv1)
 
-        conv2 = self.conv2(pool1)  # 128
-        pool2 = self.pool(conv2)  # 128
+        conv2 = self.conv2(pool1)
+        pool2 = self.pool(conv2)
 
-        conv3 = self.conv3(pool2)  # 256
-        pool3 = self.pool(conv3)  # 256
+        conv3 = self.conv3(pool2)
+        pool3 = self.pool(conv3)
 
-        conv4 = self.conv4(pool3)  # 512
-        pool4 = self.pool(conv4)  # 512
+        conv4 = self.conv4(pool3)
+        pool4 = self.pool(conv4)
 
-        conv5 = self.conv5(pool4)  # 1024
+        conv5 = self.conv5(pool4)
 
         # Decoding path
-        up6 = self.up6(conv5)  # 512
-        merge6 = torch.cat([conv4, up6], dim=1)  # 512 + 512 = 1024
-        conv6 = self.conv6(merge6)  # 512
+        up6 = self.up6(conv5)
+        merge6 = torch.cat([conv4, up6], dim=1)
+        conv6 = self.conv6(merge6)
 
-        up7 = self.up7(conv6)  # 256
-        merge7 = torch.cat([conv3, up7], dim=1)  # 256 + 256 = 512
-        conv7 = self.conv7(merge7)  # 256
+        up7 = self.up7(conv6)
+        merge7 = torch.cat([conv3, up7], dim=1)
+        conv7 = self.conv7(merge7)
 
-        up8 = self.up8(conv7)  # 128
-        merge8 = torch.cat([conv2, up8], dim=1)  # 128 + 128 = 256
-        conv8 = self.conv8(merge8)  # 128
+        up8 = self.up8(conv7)
+        merge8 = torch.cat([conv2, up8], dim=1)
+        conv8 = self.conv8(merge8)
 
-        up9 = self.up9(conv8)  # 64
-        merge9 = torch.cat([conv1, up9], dim=1)  # 64 + 64 = 128
-        conv9 = self.conv9(merge9)  # 64
+        up9 = self.up9(conv8)
+        merge9 = torch.cat([conv1, up9], dim=1)
+        conv9 = self.conv9(merge9)
 
-        conv10 = self.conv10(conv9)  # n_classes
+        conv10 = self.conv10(conv9)
 
+        return conv10
+
+
+class Autoencoder(nn.Module):
+    """Autoencoder for pre-training"""
+
+    def __init__(self, n_channels: int = 3):
+        super().__init__()
+
+        # Encoder
+        self.conv1 = DoubleConv(n_channels, 64)
+        self.conv2 = DoubleConv(64, 128)
+        self.conv3 = DoubleConv(128, 256)
+        self.conv4 = DoubleConv(256, 512)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Decoder
+        self.upconv4 = nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2)
+        self.dconv4 = DoubleConv(512, 256)
+
+        self.upconv3 = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
+        self.dconv3 = DoubleConv(256, 128)
+
+        self.upconv2 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
+        self.dconv2 = DoubleConv(128, 64)
+
+        self.upconv1 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
+        self.dconv1 = DoubleConv(64, 32)
+
+        self.final_conv = nn.Conv2d(32, n_channels, kernel_size=1)
+
+    def get_encoder(self):
+        """Returns a copy of the encoder part"""
+        encoder = nn.ModuleDict({
+            'conv1': self.conv1,
+            'conv2': self.conv2,
+            'conv3': self.conv3,
+            'conv4': self.conv4,
+            'pool': self.pool
+        })
+        return encoder
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Encoder
+        conv1 = self.conv1(x)
+        x = self.pool(conv1)
+
+        conv2 = self.conv2(x)
+        x = self.pool(conv2)
+
+        conv3 = self.conv3(x)
+        x = self.pool(conv3)
+
+        conv4 = self.conv4(x)
+        x = self.pool(conv4)
+
+        # Decoder
+        x = self.upconv4(x)
+        x = self.dconv4(x)
+
+        x = self.upconv3(x)
+        x = self.dconv3(x)
+
+        x = self.upconv2(x)
+        x = self.dconv2(x)
+
+        x = self.upconv1(x)
+        x = self.dconv1(x)
+
+        x = self.final_conv(x)
+        return torch.sigmoid(x)
+
+
+class AESegmentation(nn.Module):
+    """Segmentation model using pre-trained encoder"""
+
+    def __init__(self, pretrained_encoder: nn.ModuleDict, n_classes: int = 3):
+        super().__init__()
+
+        # Encoder (pretrained and frozen)
+        self.conv1 = pretrained_encoder['conv1']
+        self.conv2 = pretrained_encoder['conv2']
+        self.conv3 = pretrained_encoder['conv3']
+        self.conv4 = pretrained_encoder['conv4']
+        self.pool = pretrained_encoder['pool']
+
+        # Freeze encoder weights
+        for param in self.parameters():
+            param.requires_grad = False
+
+        # Decoder (trainable)
+        self.up6 = nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2)
+        self.conv6 = DoubleConv(1024, 512)
+
+        self.up7 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.conv7 = DoubleConv(512, 256)
+
+        self.up8 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.conv8 = DoubleConv(256, 128)
+
+        self.up9 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.conv9 = DoubleConv(128, 64)
+
+        self.conv10 = nn.Conv2d(64, n_classes, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Encoder (frozen)
+        conv1 = self.conv1(x)
+        pool1 = self.pool(conv1)
+
+        conv2 = self.conv2(pool1)
+        pool2 = self.pool(conv2)
+
+        conv3 = self.conv3(pool2)
+        pool3 = self.pool(conv3)
+
+        conv4 = self.conv4(pool3)
+        encoded = self.pool(conv4)
+
+        # Decoder
+        up6 = self.up6(encoded)
+        merge6 = torch.cat([conv4, up6], dim=1)
+        conv6 = self.conv6(merge6)
+
+        up7 = self.up7(conv6)
+        merge7 = torch.cat([conv3, up7], dim=1)
+        conv7 = self.conv7(merge7)
+
+        up8 = self.up8(conv7)
+        merge8 = torch.cat([conv2, up8], dim=1)
+        conv8 = self.conv8(merge8)
+
+        up9 = self.up9(conv8)
+        merge9 = torch.cat([conv1, up9], dim=1)
+        conv9 = self.conv9(merge9)
+
+        conv10 = self.conv10(conv9)
         return conv10

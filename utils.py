@@ -143,13 +143,7 @@ def save_predictions(model, test_loader, device, save_dir, num_samples=10):
         for idx, sample in enumerate(dog_samples):
             save_prediction(sample, f'dog_{idx + 1}')
 
-
-def evaluate_and_save_metrics(
-        model: torch.nn.Module,
-        dataloader: torch.utils.data.DataLoader,
-        device: torch.device,
-        save_dir: str
-):
+def evaluate_and_save_metrics(model, dataloader, device, save_dir):
     """Evaluate model and save detailed metrics"""
     model.eval()
     metrics_dir = os.path.join(save_dir, 'metrics')
@@ -166,7 +160,13 @@ def evaluate_and_save_metrics(
             images = batch['image'].to(device)
             masks = batch['mask'].to(device)
 
-            outputs = model(images)
+            # Check if the model requires point heatmaps (for PointUNet)
+            if hasattr(model, 'point_encoder'):  # This checks if it's a PointUNet
+                point_heatmaps = batch['point_heatmap'].to(device)
+                outputs = model(images, point_heatmaps)
+            else:
+                outputs = model(images)
+
             preds = torch.argmax(outputs, dim=1)
 
             # Calculate metrics for each class

@@ -59,54 +59,89 @@ def plot_training_history(history: Dict[str, list], save_dir: str):
     )
 
 
-def save_predictions(
-        model: torch.nn.Module,
-        dataloader: torch.utils.data.DataLoader,
-        device: torch.device,
-        save_dir: str,
-        num_samples: int = 5
-):
-    """Save model predictions as images"""
+def save_predictions(model, test_loader, device, save_dir, num_samples=10):
+    """Save best predictions for both cats and dogs"""
     model.eval()
-    plots_dir = os.path.join(save_dir, 'predictions')
-    os.makedirs(plots_dir, exist_ok=True)
+    os.makedirs(os.path.join(save_dir, 'predictions'), exist_ok=True)
+
+    cat_predictions = []  # (IoU score, image, mask, pred, filename)
+    dog_predictions = []  # (IoU score, image, mask, pred, filename)
 
     with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            if i >= num_samples:
-                break
-
+        for batch in test_loader:
             images = batch['image'].to(device)
-            masks = batch['mask'].cpu()
+            masks = batch['mask'].to(device)
             filenames = batch['filename']
 
             outputs = model(images)
-            preds = torch.argmax(outputs, dim=1).cpu()
+            preds = torch.argmax(outputs, dim=1)
 
-            for j in range(len(images)):
-                plt.figure(figsize=(15, 5))
+            # Calculate IoU for each image
+            for idx, (image, mask, pred, filename) in enumerate(zip(images, masks, preds, filenames)):
+                # For cats (class 1)
+                if 1 in mask:
+                    cat_mask = (mask == 1)
+                    cat_pred = (pred == 1)
+                    intersection = torch.logical_and(cat_mask, cat_pred).sum().float()
+                    union = torch.logical_or(cat_mask, cat_pred).sum().float()
+                    iou = (intersection / (union + 1e-8)).item()
+                    cat_predictions.append((iou, image, mask, pred, filename))
 
-                # Plot original image
-                plt.subplot(1, 3, 1)
-                plt.imshow(images[j].cpu().permute(1, 2, 0))
-                plt.title('Input Image')
-                plt.axis('off')
+                # For dogs (class 2)
+                if 2 in mask:
+                    dog_mask = (mask == 2)
+                    dog_pred = (pred == 2)
+                    intersection = torch.logical_and(dog_mask, dog_pred).sum().float()
+                    union = torch.logical_or(dog_mask, dog_pred).sum().float()
+                    iou = (intersection / (union + 1e-8)).item()
+                    dog_predictions.append((iou, image, mask, pred, filename))
 
-                # Plot ground truth
-                plt.subplot(1, 3, 2)
-                plt.imshow(masks[j], cmap='tab10', vmin=0, vmax=2)
-                plt.title('Ground Truth')
-                plt.axis('off')
+        # Sort by IoU and get top 10
+        cat_predictions.sort(key=lambda x: x[0], reverse=True)
+        dog_predictions.sort(key=lambda x: x[0], reverse=True)
 
-                # Plot prediction
-                plt.subplot(1, 3, 3)
-                plt.imshow(preds[j], cmap='tab10', vmin=0, vmax=2)
-                plt.title('Prediction')
-                plt.axis('off')
+        # Take the top num_samples predictions for each class
+        cat_samples = cat_predictions[:num_samples]
+        dog_samples = dog_predictions[:num_samples]
 
-                plt.tight_layout()
-                plt.savefig(os.path.join(plots_dir, f'pred_{filenames[j]}.png'))
-                plt.close()
+        print(f"\nFound {len(cat_predictions)} cat images and {len(dog_predictions)} dog images")
+        if cat_samples:
+            print(f"Best cat IoU: {cat_samples[0][0]:.4f}")
+        if dog_samples:
+            print(f"Best dog IoU: {dog_samples[0][0]:.4f}")
+
+        def save_prediction(sample, prefix):
+            iou, image, mask, pred, filename = sample
+
+            plt.figure(figsize=(15, 5))
+
+            plt.subplot(1, 3, 1)
+            plt.imshow(image.cpu().permute(1, 2, 0))
+            plt.title('Input Image')
+            plt.axis('off')
+
+            plt.subplot(1, 3, 2)
+            plt.imshow(mask.cpu(), cmap='tab10', vmin=0, vmax=2)
+            plt.title('Ground Truth')
+            plt.axis('off')
+
+            plt.subplot(1, 3, 3)
+            plt.imshow(pred.cpu(), cmap='tab10', vmin=0, vmax=2)
+            plt.title(f'Prediction (IoU: {iou:.4f})')
+            plt.axis('off')
+
+            plt.savefig(os.path.join(save_dir, 'predictions', f'{prefix}_iou{iou:.4f}_{filename}.png'))
+            plt.close()
+
+        # Save top predictions for cats
+        print("\nSaving top cat predictions...")
+        for idx, sample in enumerate(cat_samples):
+            save_prediction(sample, f'cat_{idx + 1}')
+
+        # Save top predictions for dogs
+        print("\nSaving top dog predictions...")
+        for idx, sample in enumerate(dog_samples):
+            save_prediction(sample, f'dog_{idx + 1}')
 
 
 def evaluate_and_save_metrics(

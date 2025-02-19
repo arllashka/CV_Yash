@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from clip import clip
 
 
 class DoubleConv(nn.Module):
@@ -221,3 +222,92 @@ class AESegmentation(nn.Module):
 
         conv10 = self.conv10(conv9)
         return conv10
+
+
+class CLIPSegmentation(nn.Module):
+    """Segmentation model using frozen CLIP features"""
+
+    def __init__(self, n_classes=3):
+        super().__init__()
+
+        # Load CLIP model
+        self.clip_model, _ = clip.load("ViT-B/32", device='cpu')  # Can be moved to GPU later
+
+        # Freeze CLIP parameters
+        for param in self.clip_model.parameters():
+            param.requires_grad = False
+
+        # Get CLIP's feature dimension (512 for ViT-B/32)
+        self.feature_dim = self.clip_model.visual.output_dim
+
+        # Decoder
+        self.decoder = CLIPSegmentationDecoder(
+            in_channels=self.feature_dim,
+            n_classes=n_classes
+        )
+
+    def forward(self, x):
+        # Get CLIP features
+        with torch.no_grad():
+            # Ensure input is in CLIP's expected format
+            x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+            features = self.clip_model.encode_image(x)  # [B, 512]
+
+            # Reshape features to spatial form
+            features = features.view(-1, self.feature_dim, 1, 1)  # [B, 512, 1, 1]
+            features = features.expand(-1, -1, 7, 7)  # [B, 512, 7, 7]
+
+        # Decode features to segmentation map
+        out = self.decoder(features)
+
+        # Resize to input resolution
+        out = F.interpolate(out, size=x.shape[2:], mode='bilinear', align_corners=False)
+        return out
+
+
+class CLIPSegmentationDecoder(nn.Module):
+    """Decoder for CLIP features to segmentation map"""
+
+    def __init__(self, in_channels=512, n_classes=3):
+        super().__init__()
+
+        self.conv1 = nn.Sequential(
+            nn.ConvTranspose2d(in_channels, 512, kernel_size=2, stride=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True)
+        )
+
+        self.conv2 = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True)
+        )
+
+        self.conv3 = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )
+
+        self.conv4 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+
+        self.conv5 = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.final_conv = nn.Conv2d(32, n_classes, kernel_size=1)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = self.final_conv(x)
+        return x

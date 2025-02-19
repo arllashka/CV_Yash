@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
 from datetime import datetime
+import json
 
 from point_dataset import PointPromptDataset
 from point_model import PointSegmentationModel
@@ -116,12 +117,37 @@ class PointSegmentationTrainer:
             total_iou += iou.mean().item()
             total_dice += dice.mean().item()
 
+        # Calculate background IoU
+        background_ious = []
+        for batch in val_loader:
+            images = batch['image'].to(self.device)
+            point_heatmaps = batch['point_heatmap'].to(self.device)
+            # Original full mask (with all classes)
+            full_mask = batch['full_mask'].to(self.device)
+
+            outputs = self.model(images, point_heatmaps)
+            pred_masks = (outputs > 0.5).float()
+
+            # Calculate background IoU (where full_mask == 0)
+            background_mask = (full_mask == 0).float()
+            background_pred = (pred_masks == 0).float()
+
+            intersection = (background_pred * background_mask).sum((1, 2))
+            union = (background_pred + background_mask).bool().float().sum((1, 2))
+            background_iou = (intersection / (union + 1e-6))
+            background_ious.extend(background_iou.cpu().tolist())
+
         metrics = {
             'loss': total_loss / num_batches,
             'iou': total_iou / num_batches,
             'dice': total_dice / num_batches,
+            'background_iou': sum(background_ious) / len(background_ious) if background_ious else 0,
             'cat_iou': sum(cat_ious) / len(cat_ious) if cat_ious else 0,
-            'dog_iou': sum(dog_ious) / len(dog_ious) if dog_ious else 0
+            'dog_iou': sum(dog_ious) / len(dog_ious) if dog_ious else 0,
+            'mean_iou': (sum(background_ious) / len(background_ious) if background_ious else 0 +
+                                                                                             sum(cat_ious) / len(
+                cat_ious) if cat_ious else 0 +
+                                           sum(dog_ious) / len(dog_ious) if dog_ious else 0) / 3
         }
         return metrics
 
@@ -140,55 +166,98 @@ class PointSegmentationTrainer:
 
         torch.save(checkpoint, path)
 
-    def save_example_predictions(self, val_loader: DataLoader, epoch: int):
+    def save_example_predictions(self, val_loader: DataLoader, epoch: int, num_samples: int = 3):
         self.model.eval()
         os.makedirs(os.path.join(self.save_dir, 'predictions', f'epoch_{epoch}'), exist_ok=True)
 
         with torch.no_grad():
-            batch = next(iter(val_loader))
-            images = batch['image'].to(self.device)
-            point_heatmaps = batch['point_heatmap'].to(self.device)
-            masks = batch['mask'].to(self.device)
-            points = batch['point']
-            filenames = batch['filename']
+            # Collect examples for both classes
+            cat_examples = []
+            dog_examples = []
+            needed_cats = num_samples
+            needed_dogs = num_samples
 
-            outputs = self.model(images, point_heatmaps)
-            pred_masks = (outputs > 0.5).float()
+            for batch in val_loader:
+                if needed_cats == 0 and needed_dogs == 0:
+                    break
 
-            for idx in range(min(5, len(images))):
-                fig, axs = plt.subplots(2, 2, figsize=(12, 12))
+                class_indices = batch['class_idx']
 
-                # Original image with point
-                img = images[idx].cpu().permute(1, 2, 0)
-                point_y, point_x = points[idx]
-                axs[0, 0].imshow(img)
-                axs[0, 0].plot(point_x, point_y, 'rx', markersize=10)
-                axs[0, 0].set_title('Input Image with Point')
-                axs[0, 0].axis('off')
+                # Find cat examples
+                if needed_cats > 0 and 1 in class_indices:
+                    cat_indices = (class_indices == 1).nonzero(as_tuple=True)[0]
+                    for cat_idx in cat_indices[:needed_cats]:
+                        cat_examples.append({
+                            'image': batch['image'][cat_idx:cat_idx + 1],
+                            'point_heatmap': batch['point_heatmap'][cat_idx:cat_idx + 1],
+                            'mask': batch['mask'][cat_idx:cat_idx + 1],
+                            'point': batch['point'][cat_idx:cat_idx + 1],
+                            'filename': [batch['filename'][cat_idx]],
+                            'class_idx': batch['class_idx'][cat_idx:cat_idx + 1]
+                        })
+                    needed_cats = max(0, needed_cats - len(cat_indices))
 
-                # Point heatmap
-                axs[0, 1].imshow(point_heatmaps[idx, 0].cpu(), cmap='hot')
-                axs[0, 1].set_title('Point Heatmap')
-                axs[0, 1].axis('off')
+                # Find dog examples
+                if needed_dogs > 0 and 2 in class_indices:
+                    dog_indices = (class_indices == 2).nonzero(as_tuple=True)[0]
+                    for dog_idx in dog_indices[:needed_dogs]:
+                        dog_examples.append({
+                            'image': batch['image'][dog_idx:dog_idx + 1],
+                            'point_heatmap': batch['point_heatmap'][dog_idx:dog_idx + 1],
+                            'mask': batch['mask'][dog_idx:dog_idx + 1],
+                            'point': batch['point'][dog_idx:dog_idx + 1],
+                            'filename': [batch['filename'][dog_idx]],
+                            'class_idx': batch['class_idx'][dog_idx:dog_idx + 1]
+                        })
 
-                # Ground truth mask
-                axs[1, 0].imshow(masks[idx].cpu(), cmap='gray')
-                axs[1, 0].set_title('Ground Truth')
-                axs[1, 0].axis('off')
+            # Process and save predictions for both cats and dogs
+            for examples, animal in [(cat_examples, 'cat'), (dog_examples, 'dog')]:
+                if batch is None:
+                    continue
 
-                # Predicted mask
-                axs[1, 1].imshow(pred_masks[idx, 0].cpu(), cmap='gray')
-                axs[1, 1].set_title('Prediction')
-                axs[1, 1].axis('off')
+                images = batch['image'].to(self.device)
+                point_heatmaps = batch['point_heatmap'].to(self.device)
+                masks = batch['mask'].to(self.device)
+                points = batch['point']
+                filenames = batch['filename']
 
-                plt.tight_layout()
-                plt.savefig(os.path.join(
-                    self.save_dir,
-                    'predictions',
-                    f'epoch_{epoch}',
-                    f'pred_{filenames[idx]}'
-                ))
-                plt.close()
+                outputs = self.model(images, point_heatmaps)
+                pred_masks = (outputs > 0.5).float()
+
+                for idx in range(len(images)):
+                    fig, axs = plt.subplots(2, 2, figsize=(12, 12))
+
+                    # Original image with point
+                    img = images[idx].cpu().permute(1, 2, 0)
+                    point_y, point_x = points[idx]
+                    axs[0, 0].imshow(img)
+                    axs[0, 0].plot(point_x, point_y, 'rx', markersize=10)
+                    axs[0, 0].set_title(f'Input {animal.title()} Image with Point')
+                    axs[0, 0].axis('off')
+
+                    # Point heatmap
+                    axs[0, 1].imshow(point_heatmaps[idx, 0].cpu(), cmap='hot')
+                    axs[0, 1].set_title('Point Heatmap')
+                    axs[0, 1].axis('off')
+
+                    # Ground truth mask
+                    axs[1, 0].imshow(masks[idx].cpu(), cmap='gray')
+                    axs[1, 0].set_title('Ground Truth')
+                    axs[1, 0].axis('off')
+
+                    # Predicted mask
+                    axs[1, 1].imshow(pred_masks[idx].cpu(), cmap='gray')
+                    axs[1, 1].set_title('Prediction')
+                    axs[1, 1].axis('off')
+
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(
+                        self.save_dir,
+                        'predictions',
+                        f'epoch_{epoch}',
+                        f'{animal}_{filenames[idx]}'
+                    ))
+                    plt.close()
 
     def train(
             self,
@@ -339,11 +408,12 @@ def main():
     print("\nEvaluating on test set...")
     test_metrics = trainer.evaluate(test_loader)
     print("\nTest set metrics:")
-    print(f"Loss: {test_metrics['loss']:.4f}")
-    print(f"IoU: {test_metrics['iou']:.4f}")
-    print(f"Dice: {test_metrics['dice']:.4f}")
-    print(f"Cat IoU: {test_metrics['cat_iou']:.4f}")
-    print(f"Dog IoU: {test_metrics['dog_iou']:.4f}")
+    print(f"Mean IoU: {test_metrics['mean_iou']:.4f}")
+    print(f"Mean Dice: {test_metrics['mean_dice']:.4f}")
+    print("\nPer-class metrics:")
+    print(f"Background - IoU: {test_metrics['background_iou']:.4f}, Dice: {test_metrics['background_dice']:.4f}")
+    print(f"Cat - IoU: {test_metrics['cat_iou']:.4f}, Dice: {test_metrics['cat_dice']:.4f}")
+    print(f"Dog - IoU: {test_metrics['dog_iou']:.4f}, Dice: {test_metrics['dog_dice']:.4f}")
 
     # Save test metrics
     with open(os.path.join(save_dir, 'test_metrics.json'), 'w') as f:

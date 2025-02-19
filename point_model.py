@@ -79,7 +79,7 @@ class PointSegmentationModel(nn.Module):
 
         conv10 = self.conv10(conv9)
 
-        return torch.sigmoid(conv10)  # Binary segmentation
+        return torch.sigmoid(conv10).squeeze(1)  # Remove channel dimension to match target shape
 
 
 class DoubleConv(nn.Module):

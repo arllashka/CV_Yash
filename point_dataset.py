@@ -4,12 +4,12 @@ import torchvision.transforms as T
 from PIL import Image
 import os
 import numpy as np
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple
 import random
 
 
 class PointPromptDataset(Dataset):
-    """Dataset class for point-prompted segmentation with balanced cat/dog sampling"""
+    """Dataset class for point-prompted segmentation"""
 
     def __init__(
             self,
@@ -33,27 +33,7 @@ class PointPromptDataset(Dataset):
 
         self.img_dir = os.path.join(base_dir, 'color')
         self.mask_dir = os.path.join(base_dir, 'label')
-
-        # Create separate lists for cat and dog images
-        self.cat_images: List[str] = []
-        self.dog_images: List[str] = []
-
-        # Categorize images based on content
-        print(f"Categorizing {split} images...")
-        for img_file in sorted(os.listdir(self.img_dir)):
-            mask_file = os.path.join(self.mask_dir, img_file.replace('.jpg', '.png'))
-            mask = np.array(Image.open(mask_file))
-
-            # Check for cat (class 1) and dog (class 2)
-            if 1 in mask:
-                self.cat_images.append(img_file)
-            if 2 in mask or 255 in mask:  # 255 is mapped to 2 for dogs
-                self.dog_images.append(img_file)
-
-        print(f"Found {len(self.cat_images)} cat images and {len(self.dog_images)} dog images")
-
-        # For training/validation, we'll sample equally from both classes
-        self.max_samples = max(len(self.cat_images), len(self.dog_images))
+        self.img_files = sorted(os.listdir(self.img_dir))
 
         # Basic transforms
         self.resize = T.Resize(img_size, interpolation=T.InterpolationMode.BILINEAR)
@@ -112,27 +92,12 @@ class PointPromptDataset(Dataset):
         return (y_coords[idx].item(), x_coords[idx].item())
 
     def __len__(self) -> int:
-        # Return twice the max length to ensure equal sampling from both classes
-        return 2 * self.max_samples
+        return len(self.img_files)
 
     def __getitem__(self, idx: int) -> dict:
-        # Determine if we're sampling a cat or dog image
-        is_cat = idx < self.max_samples
-
-        # Get the appropriate image list and class index
-        if is_cat:
-            img_list = self.cat_images
-            class_idx = 1  # cat
-            actual_idx = idx % len(self.cat_images)
-        else:
-            img_list = self.dog_images
-            class_idx = 2  # dog
-            actual_idx = idx % len(self.dog_images)
-
         # Load image and mask
-        img_file = img_list[actual_idx]
-        img_path = os.path.join(self.img_dir, img_file)
-        mask_path = os.path.join(self.mask_dir, img_file.replace('.jpg', '.png'))
+        img_path = os.path.join(self.img_dir, self.img_files[idx])
+        mask_path = os.path.join(self.mask_dir, self.img_files[idx].replace('.jpg', '.png'))
 
         image = Image.open(img_path).convert('RGB')
         mask = Image.open(mask_path)
@@ -157,11 +122,19 @@ class PointPromptDataset(Dataset):
         mask = torch.where(mask == 255, torch.tensor(2), mask)
         mask = mask.long()
 
-        # Sample point from the correct class
+        # Randomly choose between cat (1) and dog (2)
+        class_idx = random.choice([1, 2])
         point = self.sample_point(mask, class_idx)
+
+        # If no point found for chosen class, try the other class
         if point is None:
-            # This shouldn't happen given our categorization, but just in case
-            raise RuntimeError(f"Could not find point for class {class_idx} in image {img_file}")
+            class_idx = 3 - class_idx  # Switch between 1 and 2
+            point = self.sample_point(mask, class_idx)
+
+        # If still no point found, use background
+        if point is None:
+            class_idx = 0
+            point = self.sample_point(mask, class_idx)
 
         # Generate point heatmap
         point_heatmap = self.generate_point_heatmap(mask, point)
@@ -175,5 +148,5 @@ class PointPromptDataset(Dataset):
             'mask': target_mask,
             'point': torch.tensor(point),
             'class_idx': torch.tensor(class_idx),
-            'filename': img_file
+            'filename': self.img_files[idx]
         }

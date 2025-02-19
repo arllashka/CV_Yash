@@ -3,22 +3,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class PointSegmentationModel(nn.Module):
-    """UNet-based architecture modified for point-prompted segmentation"""
+class PointUNet(nn.Module):
+    """UNet architecture modified for point-based segmentation"""
 
-    def __init__(self, n_channels: int = 3):
+    def __init__(self, n_channels=3, n_classes=3):
         super().__init__()
 
-        # Initial convolution for point heatmap
-        self.point_conv = nn.Sequential(
+        # Point processing branch
+        self.point_encoder = nn.Sequential(
             nn.Conv2d(1, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
 
-        # Modified encoder for image (adding point features)
-        self.conv1 = DoubleConv(n_channels, 64)
-        self.conv2 = DoubleConv(128, 128)  # 128 input = 64 from image + 64 from point
+        # Modified input layer to handle concatenated features
+        self.conv1 = DoubleConv(n_channels + 64, 64)
+
+        # Rest of the UNet architecture remains the same
+        self.conv2 = DoubleConv(64, 128)
         self.conv3 = DoubleConv(128, 256)
         self.conv4 = DoubleConv(256, 512)
         self.conv5 = DoubleConv(512, 1024)
@@ -37,16 +39,17 @@ class PointSegmentationModel(nn.Module):
         self.up9 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
         self.conv9 = DoubleConv(128, 64)
 
-        self.conv10 = nn.Conv2d(64, 1, kernel_size=1)  # Output is binary mask
+        self.conv10 = nn.Conv2d(64, n_classes, kernel_size=1)
 
-    def forward(self, x: torch.Tensor, point_heatmap: torch.Tensor) -> torch.Tensor:
+    def forward(self, x, point_heatmap):
         # Process point heatmap
-        p1 = self.point_conv(point_heatmap)
+        point_features = self.point_encoder(point_heatmap)
 
-        # Encoding path with point features
-        conv1 = self.conv1(x)
         # Concatenate image and point features
-        conv1 = torch.cat([conv1, p1], dim=1)
+        x = torch.cat([x, point_features], dim=1)
+
+        # Encoding path
+        conv1 = self.conv1(x)
         pool1 = self.pool(conv1)
 
         conv2 = self.conv2(pool1)
@@ -74,18 +77,18 @@ class PointSegmentationModel(nn.Module):
         conv8 = self.conv8(merge8)
 
         up9 = self.up9(conv8)
-        merge9 = torch.cat([self.conv1(x), up9], dim=1)  # Use original image features
+        merge9 = torch.cat([conv1, up9], dim=1)
         conv9 = self.conv9(merge9)
 
         conv10 = self.conv10(conv9)
 
-        return torch.sigmoid(conv10).squeeze(1)  # Remove channel dimension to match target shape
+        return conv10
 
 
 class DoubleConv(nn.Module):
     """Double Convolution and BN and ReLU"""
 
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
@@ -96,5 +99,5 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         return self.double_conv(x)

@@ -4,28 +4,24 @@ import torchvision.transforms as T
 from PIL import Image
 import os
 import numpy as np
-from typing import Optional, Tuple
-import random
 
 
-class PointPromptDataset(Dataset):
-    """Dataset class for point-prompted segmentation"""
+class PointSegmentationDataset(Dataset):
+    """Dataset class for point-based segmentation"""
 
     def __init__(
             self,
-            root_dir: str,
-            split: str = 'train',
-            img_size: Tuple[int, int] = (256, 256),
-            augment: bool = True,
-            sigma: float = 10.0  # Gaussian sigma for point heatmap
+            root_dir,
+            split='train',
+            img_size=(256, 256),
+            augment=True
     ):
         self.root_dir = root_dir
         self.split = split
         self.img_size = img_size
         self.augment = augment and split == 'train'
-        self.sigma = sigma
 
-        # Setup paths based on the actual dataset structure
+        # Setup paths
         if split == 'train' or split == 'val':
             base_dir = os.path.join(root_dir, 'TrainVal')
         else:
@@ -33,27 +29,7 @@ class PointPromptDataset(Dataset):
 
         self.img_dir = os.path.join(base_dir, 'color')
         self.mask_dir = os.path.join(base_dir, 'label')
-
-        # Get all image files
-        self.all_images = sorted(os.listdir(self.img_dir))
-
-        # Create separate lists for cat and dog images
-        self.cat_images = []
-        self.dog_images = []
-
-        # Categorize images based on content
-        print(f"Categorizing {split} images...")
-        for img_file in self.all_images:
-            mask_file = os.path.join(self.mask_dir, img_file.replace('.jpg', '.png'))
-            mask = np.array(Image.open(mask_file))
-
-            # Check for cat (class 1) and dog (class 2)
-            if 1 in mask:
-                self.cat_images.append(img_file)
-            if 2 in mask or 255 in mask:  # 255 is mapped to 2 for dogs
-                self.dog_images.append(img_file)
-
-        print(f"Found {len(self.cat_images)} cat images and {len(self.dog_images)} dog images")
+        self.img_files = sorted(os.listdir(self.img_dir))
 
         # Basic transforms
         self.resize = T.Resize(img_size, interpolation=T.InterpolationMode.BILINEAR)
@@ -84,41 +60,35 @@ class PointPromptDataset(Dataset):
                 )
             ])
 
-    def generate_point_heatmap(self, mask: torch.Tensor, point: Tuple[int, int]) -> torch.Tensor:
-        """Generate Gaussian heatmap for a given point"""
+    def generate_point_heatmap(self, point):
+        """Generate Gaussian heatmap for the given point"""
         y, x = point
-        heatmap = torch.zeros(self.img_size)
+        heatmap = np.zeros(self.img_size, dtype=np.float32)
 
-        # Create coordinate grids
-        y_grid, x_grid = torch.meshgrid(
-            torch.arange(self.img_size[0], dtype=torch.float32),
-            torch.arange(self.img_size[1], dtype=torch.float32)
-        )
+        # Generate 2D Gaussian
+        sigma = min(self.img_size) / 16  # Adaptive sigma based on image size
+        y_grid, x_grid = np.ogrid[:self.img_size[0], :self.img_size[1]]
+        heatmap = np.exp(-((y_grid - y) ** 2 + (x_grid - x) ** 2) / (2 * sigma ** 2))
 
-        # Calculate Gaussian heatmap
-        heatmap = torch.exp(-((x_grid - x) ** 2 + (y_grid - y) ** 2) / (2 * self.sigma ** 2))
-        return heatmap
+        return torch.FloatTensor(heatmap).unsqueeze(0)
 
-    def sample_point(self, mask: torch.Tensor, class_idx: int) -> Optional[Tuple[int, int]]:
-        """Sample a random point from the region of the specified class"""
-        # Get coordinates where mask equals class_idx
-        y_coords, x_coords = torch.where(mask == class_idx)
-
-        if len(y_coords) == 0:
+    def sample_point(self, mask, target_class):
+        """Sample a random point from the target class region"""
+        valid_points = torch.nonzero(mask == target_class)
+        if len(valid_points) == 0:
             return None
 
         # Randomly select one point
-        idx = random.randint(0, len(y_coords) - 1)
-        return (y_coords[idx].item(), x_coords[idx].item())
+        idx = torch.randint(len(valid_points), (1,))[0]
+        return valid_points[idx].tolist()
 
-    def __len__(self) -> int:
-        return len(self.all_images)  # Return actual number of images
+    def __len__(self):
+        return len(self.img_files)
 
-    def __getitem__(self, idx: int) -> dict:
+    def __getitem__(self, idx):
         # Load image and mask
-        img_file = self.all_images[idx]
-        img_path = os.path.join(self.img_dir, img_file)
-        mask_path = os.path.join(self.mask_dir, img_file.replace('.jpg', '.png'))
+        img_path = os.path.join(self.img_dir, self.img_files[idx])
+        mask_path = os.path.join(self.mask_dir, self.img_files[idx].replace('.jpg', '.png'))
 
         image = Image.open(img_path).convert('RGB')
         mask = Image.open(mask_path)
@@ -143,38 +113,26 @@ class PointPromptDataset(Dataset):
         mask = torch.where(mask == 255, torch.tensor(2), mask)
         mask = mask.long()
 
-        # Check which classes are present in this image
-        classes_present = []
-        if 1 in mask:  # Cat present
-            classes_present.append(1)
-        if 2 in mask:  # Dog present
-            classes_present.append(2)
+        # Sample a point from either cat or dog region
+        target_class = torch.randint(1, 3, (1,)).item()  # 1 for cat, 2 for dog
+        point = self.sample_point(mask, target_class)
 
-        # If both classes present, randomly choose one
-        # If only one class present, use that
-        # If no classes present, use background
-        if classes_present:
-            class_idx = random.choice(classes_present)
-        else:
-            class_idx = 0
-
-        # Sample point from chosen class
-        point = self.sample_point(mask, class_idx)
+        # If no valid points found for the target class, try the other class
         if point is None:
-            raise RuntimeError(f"Could not find point for class {class_idx} in image {img_file}")
+            target_class = 3 - target_class  # Switch between 1 and 2
+            point = self.sample_point(mask, target_class)
+
+        # If still no valid points, use center point
+        if point is None:
+            point = [self.img_size[0] // 2, self.img_size[1] // 2]
 
         # Generate point heatmap
-        point_heatmap = self.generate_point_heatmap(mask, point)
-
-        # Create binary mask for the selected class
-        target_mask = (mask == class_idx).long()
+        point_heatmap = self.generate_point_heatmap(point)
 
         return {
             'image': image,
-            'point_heatmap': point_heatmap.unsqueeze(0),  # Add channel dimension
-            'mask': target_mask,
-            'full_mask': mask,  # Original mask with all classes
-            'point': torch.tensor(point),
-            'class_idx': torch.tensor(class_idx),
-            'filename': img_file
+            'mask': mask,
+            'point': point,
+            'point_heatmap': point_heatmap,
+            'filename': self.img_files[idx]
         }

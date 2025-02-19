@@ -34,13 +34,16 @@ class PointPromptDataset(Dataset):
         self.img_dir = os.path.join(base_dir, 'color')
         self.mask_dir = os.path.join(base_dir, 'label')
 
+        # Get all image files
+        self.all_images = sorted(os.listdir(self.img_dir))
+
         # Create separate lists for cat and dog images
         self.cat_images = []
         self.dog_images = []
 
         # Categorize images based on content
         print(f"Categorizing {split} images...")
-        for img_file in sorted(os.listdir(self.img_dir)):
+        for img_file in self.all_images:
             mask_file = os.path.join(self.mask_dir, img_file.replace('.jpg', '.png'))
             mask = np.array(Image.open(mask_file))
 
@@ -51,9 +54,6 @@ class PointPromptDataset(Dataset):
                 self.dog_images.append(img_file)
 
         print(f"Found {len(self.cat_images)} cat images and {len(self.dog_images)} dog images")
-
-        # For training/validation, we'll sample equally from both classes
-        self.max_samples = max(len(self.cat_images), len(self.dog_images))
 
         # Basic transforms
         self.resize = T.Resize(img_size, interpolation=T.InterpolationMode.BILINEAR)
@@ -112,25 +112,11 @@ class PointPromptDataset(Dataset):
         return (y_coords[idx].item(), x_coords[idx].item())
 
     def __len__(self) -> int:
-        # Return twice the max length to ensure equal sampling from both classes
-        return 2 * self.max_samples
+        return len(self.all_images)  # Return actual number of images
 
     def __getitem__(self, idx: int) -> dict:
-        # Determine if we're sampling a cat or dog image
-        is_cat = idx < self.max_samples
-
-        # Get the appropriate image list and class index
-        if is_cat:
-            img_list = self.cat_images
-            class_idx = 1  # cat
-            actual_idx = idx % len(self.cat_images)
-        else:
-            img_list = self.dog_images
-            class_idx = 2  # dog
-            actual_idx = idx % len(self.dog_images)
-
         # Load image and mask
-        img_file = img_list[actual_idx]
+        img_file = self.all_images[idx]
         img_path = os.path.join(self.img_dir, img_file)
         mask_path = os.path.join(self.mask_dir, img_file.replace('.jpg', '.png'))
 
@@ -157,10 +143,24 @@ class PointPromptDataset(Dataset):
         mask = torch.where(mask == 255, torch.tensor(2), mask)
         mask = mask.long()
 
-        # Sample point from the correct class
+        # Check which classes are present in this image
+        classes_present = []
+        if 1 in mask:  # Cat present
+            classes_present.append(1)
+        if 2 in mask:  # Dog present
+            classes_present.append(2)
+
+        # If both classes present, randomly choose one
+        # If only one class present, use that
+        # If no classes present, use background
+        if classes_present:
+            class_idx = random.choice(classes_present)
+        else:
+            class_idx = 0
+
+        # Sample point from chosen class
         point = self.sample_point(mask, class_idx)
         if point is None:
-            # This shouldn't happen given our categorization, but just in case
             raise RuntimeError(f"Could not find point for class {class_idx} in image {img_file}")
 
         # Generate point heatmap
@@ -173,6 +173,7 @@ class PointPromptDataset(Dataset):
             'image': image,
             'point_heatmap': point_heatmap.unsqueeze(0),  # Add channel dimension
             'mask': target_mask,
+            'full_mask': mask,  # Original mask with all classes
             'point': torch.tensor(point),
             'class_idx': torch.tensor(class_idx),
             'filename': img_file

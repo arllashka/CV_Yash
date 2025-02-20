@@ -12,6 +12,7 @@ import numpy as np
 from point_unet import PointUNet
 from point_dataset import PointSegmentationDataset
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Evaluate Point-based UNet')
     parser.add_argument('--data_root', type=str, default='./Dataset',
@@ -23,52 +24,100 @@ def parse_args():
                         help='batch size for evaluation')
     return parser.parse_args()
 
-def evaluate_model(model, dataloader, device):
-    """Evaluate model metrics"""
+
+def save_point_predictions(model, test_loader, device, save_dir, num_samples=10):
+    """Save predictions with point visualization"""
     model.eval()
-    class_metrics = {
-        'background': {'iou': [], 'dice': []},
-        'cat': {'iou': [], 'dice': []},
-        'dog': {'iou': [], 'dice': []}
-    }
+    os.makedirs(os.path.join(save_dir, 'predictions'), exist_ok=True)
+
+    cat_predictions = []  # (IoU score, image, mask, pred, point, filename)
+    dog_predictions = []  # (IoU score, image, mask, pred, point, filename)
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
+        for batch in tqdm(test_loader, desc="Generating predictions"):
             images = batch['image'].to(device)
             masks = batch['mask'].to(device)
+            points = batch['point']
             point_heatmaps = batch['point_heatmap'].to(device)
+            filenames = batch['filename']
 
             outputs = model(images, point_heatmaps)
             preds = torch.argmax(outputs, dim=1)
 
-            for class_idx, class_name in enumerate(['background', 'cat', 'dog']):
-                pred_mask = (preds == class_idx)
-                target_mask = (masks == class_idx)
+            # Calculate IoU for each image
+            for idx, (image, mask, pred, point, filename) in enumerate(zip(images, masks, preds, points, filenames)):
+                # For cats (class 1)
+                if 1 in mask:
+                    cat_mask = (mask == 1)
+                    cat_pred = (pred == 1)
+                    intersection = torch.logical_and(cat_mask, cat_pred).sum().float()
+                    union = torch.logical_or(cat_mask, cat_pred).sum().float()
+                    iou = (intersection / (union + 1e-8)).item()
+                    cat_predictions.append((iou, image, mask, pred, point, filename))
 
-                intersection = (pred_mask & target_mask).sum().float()
-                union = (pred_mask | target_mask).sum().float()
+                # For dogs (class 2)
+                if 2 in mask:
+                    dog_mask = (mask == 2)
+                    dog_pred = (pred == 2)
+                    intersection = torch.logical_and(dog_mask, dog_pred).sum().float()
+                    union = torch.logical_or(dog_mask, dog_pred).sum().float()
+                    iou = (intersection / (union + 1e-8)).item()
+                    dog_predictions.append((iou, image, mask, pred, point, filename))
 
-                iou = (intersection + 1e-6) / (union + 1e-6)
-                dice = (2 * intersection + 1e-6) / (pred_mask.sum() + target_mask.sum() + 1e-6)
+        # Sort by IoU and get top predictions
+        cat_predictions.sort(key=lambda x: x[0], reverse=True)
+        dog_predictions.sort(key=lambda x: x[0], reverse=True)
 
-                class_metrics[class_name]['iou'].append(iou.item())
-                class_metrics[class_name]['dice'].append(dice.item())
+        cat_samples = cat_predictions[:num_samples]
+        dog_samples = dog_predictions[:num_samples]
 
-    final_metrics = {}
-    for class_name in class_metrics:
-        final_metrics[f'{class_name}_iou'] = np.mean(class_metrics[class_name]['iou'])
-        final_metrics[f'{class_name}_dice'] = np.mean(class_metrics[class_name]['dice'])
+        def save_prediction(sample, prefix):
+            iou, image, mask, pred, point, filename = sample
 
-    final_metrics['mean_iou'] = np.mean([
-        final_metrics[f'{class_name}_iou']
-        for class_name in ['background', 'cat', 'dog']
-    ])
-    final_metrics['mean_dice'] = np.mean([
-        final_metrics[f'{class_name}_dice']
-        for class_name in ['background', 'cat', 'dog']
-    ])
+            plt.figure(figsize=(20, 5))
 
-    return final_metrics
+            # Original image with point
+            plt.subplot(1, 4, 1)
+            img_np = image.cpu().permute(1, 2, 0).numpy()
+            plt.imshow(img_np)
+            plt.plot(point[1], point[0], 'rx', markersize=10)  # Add red X for point
+            plt.title('Input Image with Point')
+            plt.axis('off')
+
+            # Point heatmap
+            plt.subplot(1, 4, 2)
+            heatmap = torch.zeros_like(mask, dtype=torch.float32)
+            y, x = point
+            sigma = min(image.shape[1:]) / 16
+            y_grid, x_grid = torch.meshgrid(torch.arange(image.shape[1]), torch.arange(image.shape[2]))
+            heatmap = torch.exp(-((y_grid - y) ** 2 + (x_grid - x) ** 2) / (2 * sigma ** 2))
+            plt.imshow(heatmap.cpu(), cmap='hot')
+            plt.title('Point Heatmap')
+            plt.axis('off')
+
+            # Ground truth
+            plt.subplot(1, 4, 3)
+            plt.imshow(mask.cpu(), cmap='tab10', vmin=0, vmax=2)
+            plt.title('Ground Truth')
+            plt.axis('off')
+
+            # Prediction
+            plt.subplot(1, 4, 4)
+            plt.imshow(pred.cpu(), cmap='tab10', vmin=0, vmax=2)
+            plt.title(f'Prediction (IoU: {iou:.4f})')
+            plt.axis('off')
+
+            plt.savefig(os.path.join(save_dir, 'predictions', f'{prefix}_iou{iou:.4f}_{filename}.png'))
+            plt.close()
+
+        # Save predictions
+        print("\nSaving predictions...")
+        for idx, sample in enumerate(cat_samples):
+            save_prediction(sample, f'cat_{idx + 1}')
+
+        for idx, sample in enumerate(dog_samples):
+            save_prediction(sample, f'dog_{idx + 1}')
+
 
 def main():
     args = parse_args()
@@ -101,24 +150,12 @@ def main():
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    # Evaluate model
-    print("\nCalculating metrics...")
-    metrics = evaluate_model(model, test_loader, device)
+    # Save predictions with visualization
+    print("\nGenerating and saving test predictions...")
+    save_point_predictions(model, test_loader, device, save_dir, num_samples=10)
 
-    # Save metrics
-    metrics_dir = os.path.join(save_dir, 'metrics')
-    os.makedirs(metrics_dir, exist_ok=True)
-    metrics_path = os.path.join(metrics_dir, f'test_metrics_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
-    with open(metrics_path, 'w') as f:
-        json.dump(metrics, f, indent=4)
+    print("\nPredictions have been saved to:", os.path.join(save_dir, 'predictions'))
 
-    # Print results
-    print("\nEvaluation Results:")
-    print(f"Mean IoU: {metrics['mean_iou']:.4f}")
-    print(f"Mean Dice: {metrics['mean_dice']:.4f}")
-    print("\nPer-class IoU:")
-    for class_name in ['background', 'cat', 'dog']:
-        print(f"{class_name}: {metrics[f'{class_name}_iou']:.4f}")
 
 if __name__ == '__main__':
     main()

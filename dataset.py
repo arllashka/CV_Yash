@@ -94,10 +94,8 @@ class PetSegmentationDataset(Dataset):
         # Map mask values: 0->0 (background), 1->1 (cat), 255->2 (dog)
         if 1 in mask.unique().tolist():
             mask = torch.where(mask == 255, torch.tensor(1), mask)
-            print(mask.unique().tolist())
         else:
             mask = torch.where(mask == 255, torch.tensor(2), mask)
-            print(mask.unique().tolist())
         mask = mask.long()
 
         return {

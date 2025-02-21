@@ -4,13 +4,13 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import numpy as np
 from PIL import Image
-from models import UNet
 import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 import cv2
 from skimage.util import random_noise
+from models import UNet  # Import your UNet model
 
 
 class RobustnessDataset(Dataset):
@@ -33,50 +33,57 @@ class RobustnessDataset(Dataset):
 
         img_np = np.array(image)
 
+        # Dictionary of perturbation levels as specified in the task
+        gaussian_noise_levels = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+        gaussian_blur_times = list(range(10))  # 0 to 9 convolutions
+        contrast_increase_levels = [1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.1, 1.15, 1.20, 1.25]
+        contrast_decrease_levels = [1.0, 0.95, 0.90, 0.85, 0.80, 0.60, 0.40, 0.30, 0.20, 0.10]
+        brightness_change_levels = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45]
+        occlusion_sizes = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45]
+        salt_pepper_amounts = [0.00, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18]
+
         if self.perturbation == 'gaussian_noise':
-            # Gaussian noise with increasing std
-            std = self.level * 2
+            std = gaussian_noise_levels[self.level]
             noise = np.random.normal(0, std, img_np.shape)
             perturbed = np.clip(img_np + noise, 0, 255).astype(np.uint8)
 
         elif self.perturbation == 'gaussian_blur':
-            # Gaussian blur with increasing kernel size
-            sigma = (self.level + 1) * 0.5
-            perturbed = gaussian_filter(img_np, sigma=(sigma, sigma, 0))
-            perturbed = perturbed.astype(np.uint8)
+            # Apply 3x3 Gaussian blur n times
+            kernel = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]]) / 16.0
+            perturbed = img_np.copy()
+            for _ in range(gaussian_blur_times[self.level]):
+                for c in range(3):  # Apply to each channel
+                    perturbed[:, :, c] = cv2.filter2D(perturbed[:, :, c], -1, kernel)
 
         elif self.perturbation == 'contrast_increase':
-            # Contrast increase
-            factor = 1.0 + self.level * 0.05
+            factor = contrast_increase_levels[self.level]
             perturbed = np.clip(img_np * factor, 0, 255).astype(np.uint8)
 
         elif self.perturbation == 'contrast_decrease':
-            # Contrast decrease
-            factor = 1.0 - self.level * 0.1
+            factor = contrast_decrease_levels[self.level]
             perturbed = np.clip(img_np * factor, 0, 255).astype(np.uint8)
 
         elif self.perturbation == 'brightness_increase':
-            # Brightness increase
-            increase = self.level * 5
+            increase = brightness_change_levels[self.level]
             perturbed = np.clip(img_np + increase, 0, 255).astype(np.uint8)
 
         elif self.perturbation == 'brightness_decrease':
-            # Brightness decrease
-            decrease = self.level * 5
+            decrease = brightness_change_levels[self.level]
             perturbed = np.clip(img_np - decrease, 0, 255).astype(np.uint8)
 
         elif self.perturbation == 'occlusion':
-            # Random square occlusion
-            h, w = img_np.shape[:2]
-            size = (self.level + 1) * 5
-            y = np.random.randint(0, h - size)
-            x = np.random.randint(0, w - size)
-            perturbed = img_np.copy()
-            perturbed[y:y + size, x:x + size] = 0
+            size = occlusion_sizes[self.level]
+            if size > 0:
+                h, w = img_np.shape[:2]
+                y = np.random.randint(0, h - size)
+                x = np.random.randint(0, w - size)
+                perturbed = img_np.copy()
+                perturbed[y:y + size, x:x + size] = 0
+            else:
+                perturbed = img_np
 
         elif self.perturbation == 'salt_pepper':
-            # Salt and pepper noise
-            amount = self.level * 0.02
+            amount = salt_pepper_amounts[self.level]
             perturbed = random_noise(img_np, mode='s&p', amount=amount)
             perturbed = np.clip(perturbed * 255, 0, 255).astype(np.uint8)
 

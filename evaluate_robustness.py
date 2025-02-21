@@ -277,14 +277,34 @@ class RobustnessEvaluator:
 
 
 if __name__ == "__main__":
-    # Setup paths
-    model_path = "/home/yashagarwal/CV_Yash/unet_best_model.pth"  # Updated correct path
-    data_root = "./Dataset"
-    save_dir = "./robustness_results"
+    # Get the directory where the script is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Setup paths relative to the current directory
+    model_path = os.path.join(current_dir, "unet_best_model.pth")
+    data_root = os.path.join(current_dir, "Dataset")
+    save_dir = os.path.join(current_dir, "robustness_results")
+
+    # Print paths and check if files/directories exist
+    print("\nChecking paths:")
+    print(f"Current directory: {current_dir}")
+    print(f"Model path: {model_path} (Exists: {os.path.exists(model_path)})")
+    print(f"Data root: {data_root} (Exists: {os.path.exists(data_root)})")
+    print(f"Save directory will be created at: {save_dir}")
+
+    # Verify model file exists
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"Model file not found at {model_path}. Please ensure the model file is in the same directory as this script.")
+
+    # Verify dataset directory exists
+    if not os.path.exists(data_root):
+        raise FileNotFoundError(
+            f"Dataset directory not found at {data_root}. Please ensure the Dataset folder is in the same directory as this script.")
 
     # Automatically detect if CUDA is available
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
+    print(f"\nUsing device: {device}")
 
     # Create evaluator
     evaluator = RobustnessEvaluator(
@@ -295,4 +315,5 @@ if __name__ == "__main__":
     )
 
     # Run evaluation
+    print("\nStarting evaluation...")
     evaluator.run_full_evaluation(save_dir)

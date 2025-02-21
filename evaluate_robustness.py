@@ -10,7 +10,7 @@ from skimage.util import random_noise
 import json
 from datetime import datetime
 
-from models import UNet
+from models import UNet  # Import only UNet as we're evaluating UNet model
 from dataset import PetSegmentationDataset
 from utils import evaluate_and_save_metrics
 

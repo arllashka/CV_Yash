@@ -278,7 +278,7 @@ class RobustnessEvaluator:
 
 if __name__ == "__main__":
     # Setup paths
-    model_path = "/Users/yashagarwal/Desktop/CV_Yash/unet_best_model.pth"  # Updated correct path
+    model_path = "/home/yashagarwal/CV_Yash/unet_best_model.pth"  # Updated correct path
     data_root = "./Dataset"
     save_dir = "./robustness_results"
 

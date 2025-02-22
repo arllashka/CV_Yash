@@ -110,7 +110,11 @@ class PointSegmentationDataset(Dataset):
         mask = torch.from_numpy(np.array(mask))
 
         # Map mask values: 0->0 (background), 1->1 (cat), 255->2 (dog)
-        mask = torch.where(mask == 255, torch.tensor(2), mask)
+        # mask = torch.where(mask == 255, torch.tensor(2), mask)
+        if 1 in mask.unique().tolist():
+            mask = torch.where(mask == 255, torch.tensor(1), mask)
+        else:
+            mask = torch.where(mask == 255, torch.tensor(2), mask)
         mask = mask.long()
 
         # Sample a point from either cat or dog region

@@ -1,0 +1,55 @@
+Robustness Analysis Summary
+=========================
+
+Most vulnerable to: Salt and Pepper (degradation: 0.2944)
+Most robust to: Contrast Increase (degradation: 0.0036)
+
+Performance Degradation Summary:
+Gaussian Noise:
+  Baseline: 0.6512
+  Worst: 0.3631
+  Degradation: 0.2881
+  Critical Level: 2.0
+
+Gaussian Blur:
+  Baseline: 0.6512
+  Worst: 0.4279
+  Degradation: 0.2232
+  Critical Level: 9.0
+
+Contrast Increase:
+  Baseline: 0.6512
+  Worst: 0.6476
+  Degradation: 0.0036
+  Critical Level: 1.25
+
+Contrast Decrease:
+  Baseline: 0.6512
+  Worst: 0.3999
+  Degradation: 0.2513
+  Critical Level: 0.1
+
+Brightness Increase:
+  Baseline: 0.6512
+  Worst: 0.6465
+  Degradation: 0.0047
+  Critical Level: 45.0
+
+Brightness Decrease:
+  Baseline: 0.6512
+  Worst: 0.6160
+  Degradation: 0.0352
+  Critical Level: 45.0
+
+Occlusion:
+  Baseline: 0.6512
+  Worst: 0.6307
+  Degradation: 0.0204
+  Critical Level: 45.0
+
+Salt and Pepper:
+  Baseline: 0.6512
+  Worst: 0.3568
+  Degradation: 0.2944
+  Critical Level: 0.06
+

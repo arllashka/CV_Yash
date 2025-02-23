@@ -377,8 +377,8 @@ class CLIPSegmentation(nn.Module):
         )
 
     def forward(self, x):
+        x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
         with torch.no_grad():
-            x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
             conv_features = self.clip_model.visual.conv1(x)
             features = conv_features
 

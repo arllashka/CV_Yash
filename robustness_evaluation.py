@@ -192,7 +192,7 @@ def main():
 
     # Load model
     model = UNet(n_channels=3, n_classes=3).to(device)
-    checkpoint = torch.load('results/unet2/best_model.pth')  # Update path as needed
+    checkpoint = torch.load('/home/yashagarwal/CV_Yash/results/unet2/best_model.pth')  # Update path as needed
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 

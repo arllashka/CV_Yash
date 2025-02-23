@@ -1,223 +1,235 @@
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
 import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-import os
-from PIL import Image
 import cv2
-from skimage.util import random_noise
-from typing import List, Tuple, Dict
-import json
-
-from models import UNet
+import os
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
 from dataset import PetSegmentationDataset
+from models import UNet
+from utils import evaluate_and_save_metrics
+from torch.serialization import safe_globals, add_safe_globals
+
+# Add numpy scalar to safe globals for loading model
+add_safe_globals(['numpy.core.multiarray.scalar'])
+
+# Configuration
+model_path = 'results/unet2/best_model.pth'  # Replace with your actual model path
+data_root = "./Dataset"  # Adjust this path
+save_dir = "./robustness_results"
+os.makedirs(save_dir, exist_ok=True)
+
+# Load the trained model
+model = UNet(n_channels=3, n_classes=3)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+model.load_state_dict(checkpoint['model_state_dict'])
+model.to(device)
+model.eval()
+
+# Load test dataset
+test_dataset = PetSegmentationDataset(data_root, split='test', img_size=(256, 256), augment=False)
+test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
 
 
-def apply_gaussian_noise(image: torch.Tensor, std: float) -> torch.Tensor:
-    """Apply Gaussian noise with given standard deviation"""
-    noise = torch.randn_like(image) * std
-    noisy_image = image + noise
-    return torch.clamp(noisy_image, 0, 1)
+class RobustnessEvaluator:
+    @staticmethod
+    def add_gaussian_noise(image, std):
+        """Add Gaussian noise to image"""
+        noise = torch.randn_like(image) * std
+        return torch.clamp(image + noise, 0, 1)
+
+    @staticmethod
+    def apply_gaussian_blur(image, kernel_size):
+        """Apply Gaussian blur"""
+        if kernel_size <= 1:
+            return image
+        return F.gaussian_blur(image, kernel_size=(kernel_size, kernel_size))
+
+    @staticmethod
+    def adjust_contrast(image, factor):
+        """Adjust image contrast"""
+        return torch.clamp(factor * (image - 0.5) + 0.5, 0, 1)
+
+    @staticmethod
+    def adjust_brightness(image, delta):
+        """Adjust image brightness"""
+        return torch.clamp(image + delta, 0, 1)
+
+    @staticmethod
+    def apply_occlusion(image, size):
+        """Apply random square occlusion"""
+        if size <= 0:
+            return image
+        b, c, h, w = image.shape
+        occluded = image.clone()
+
+        # Calculate random position for occlusion
+        x = torch.randint(0, w - size, (1,))
+        y = torch.randint(0, h - size, (1,))
+
+        # Apply occlusion
+        occluded[:, :, y:y + size, x:x + size] = 0
+        return occluded
+
+    @staticmethod
+    def add_salt_and_pepper(image, amount):
+        """Add salt and pepper noise"""
+        if amount <= 0:
+            return image
+
+        noise_mask = torch.rand_like(image)
+        salt = (noise_mask < amount / 2).float()
+        pepper = ((noise_mask >= amount / 2) & (noise_mask < amount)).float()
+
+        noisy_image = image.clone()
+        noisy_image[salt == 1] = 1
+        noisy_image[pepper == 1] = 0
+        return noisy_image
 
 
-def apply_gaussian_blur(image: torch.Tensor, num_convolutions: int) -> torch.Tensor:
-    """Apply Gaussian blur by convolving multiple times"""
-    if num_convolutions == 0:
-        return image
-
-    # Convert to numpy for OpenCV processing
-    img_np = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-    kernel_size = (3, 3)
-
-    for _ in range(num_convolutions):
-        img_np = cv2.GaussianBlur(img_np, kernel_size, 0)
-
-    # Convert back to torch tensor
-    return torch.from_numpy(img_np).float().permute(2, 0, 1) / 255
-
-
-def apply_contrast(image: torch.Tensor, factor: float) -> torch.Tensor:
-    """Adjust image contrast"""
-    return torch.clamp(image * factor, 0, 1)
-
-
-def apply_brightness(image: torch.Tensor, value: float) -> torch.Tensor:
-    """Adjust image brightness"""
-    return torch.clamp(image + value / 255, 0, 1)
-
-
-def apply_occlusion(image: torch.Tensor, size: int) -> torch.Tensor:
-    """Apply random square occlusion"""
-    if size == 0:
-        return image
-
-    occluded = image.clone()
-    _, H, W = image.shape
-
-    # Random position for occlusion
-    x = np.random.randint(0, W - size)
-    y = np.random.randint(0, H - size)
-
-    occluded[:, y:y + size, x:x + size] = 0
-    return occluded
-
-
-def apply_salt_and_pepper(image: torch.Tensor, amount: float) -> torch.Tensor:
-    """Apply salt and pepper noise"""
-    # Convert to numpy for skimage processing
-    img_np = image.permute(1, 2, 0).numpy()
-    noisy = random_noise(img_np, mode='s&p', amount=amount)
-    return torch.from_numpy(noisy).float().permute(2, 0, 1)
-
-
-def calculate_dice_score(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """Calculate mean Dice score across all classes"""
-    dice_scores = []
-
-    for class_idx in range(3):  # 3 classes: background, cat, dog
-        pred_mask = (pred == class_idx)
-        target_mask = (target == class_idx)
-
-        intersection = (pred_mask & target_mask).sum().float()
-        union = pred_mask.sum() + target_mask.sum()
-
-        dice = (2 * intersection + 1e-6) / (union + 1e-6)
-        dice_scores.append(dice.item())
-
-    return np.mean(dice_scores)
-
-
-def evaluate_robustness(
-        model: nn.Module,
-        test_loader: DataLoader,
-        device: torch.device,
-        save_dir: str
-) -> Dict:
-    """Evaluate model robustness against different perturbations"""
-    model.eval()
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Define perturbation parameters
-    perturbations = {
-        'gaussian_noise': {'values': [0, 2, 4, 6, 8, 10, 12, 14, 16, 18], 'func': apply_gaussian_noise},
-        'gaussian_blur': {'values': list(range(10)), 'func': apply_gaussian_blur},
-        'contrast_increase': {'values': [1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.1, 1.15, 1.20, 1.25],
-                              'func': apply_contrast},
-        'contrast_decrease': {'values': [1.0, 0.95, 0.90, 0.85, 0.80, 0.60, 0.40, 0.30, 0.20, 0.10],
-                              'func': apply_contrast},
-        'brightness_increase': {'values': [0, 5, 10, 15, 20, 25, 30, 35, 40, 45], 'func': apply_brightness},
-        'brightness_decrease': {'values': [0, 5, 10, 15, 20, 25, 30, 35, 40, 45],
-                                'func': lambda x, v: apply_brightness(x, -v)},
-        'occlusion': {'values': [0, 5, 10, 15, 20, 25, 30, 35, 40, 45], 'func': apply_occlusion},
-        'salt_and_pepper': {'values': [0.00, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
-                            'func': apply_salt_and_pepper}
+# Define perturbation configurations
+perturbations = {
+    "Gaussian Noise": {
+        "levels": [0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+        "function": RobustnessEvaluator.add_gaussian_noise
+    },
+    "Gaussian Blur": {
+        "levels": [1, 3, 5, 7, 9, 11, 13, 15, 17, 19],
+        "function": RobustnessEvaluator.apply_gaussian_blur
+    },
+    "Contrast Increase": {
+        "levels": [1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.1, 1.15, 1.20, 1.25],
+        "function": RobustnessEvaluator.adjust_contrast
+    },
+    "Contrast Decrease": {
+        "levels": [1.0, 0.95, 0.90, 0.85, 0.80, 0.60, 0.40, 0.30, 0.20, 0.10],
+        "function": RobustnessEvaluator.adjust_contrast
+    },
+    "Brightness Increase": {
+        "levels": [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45],
+        "function": RobustnessEvaluator.adjust_brightness
+    },
+    "Brightness Decrease": {
+        "levels": [0, -0.05, -0.10, -0.15, -0.20, -0.25, -0.30, -0.35, -0.40, -0.45],
+        "function": RobustnessEvaluator.adjust_brightness
+    },
+    "Occlusion": {
+        "levels": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45],
+        "function": RobustnessEvaluator.apply_occlusion
+    },
+    "Salt and Pepper": {
+        "levels": [0.00, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+        "function": RobustnessEvaluator.add_salt_and_pepper
     }
+}
 
-    results = {name: {'dice_scores': [], 'example_images': []} for name in perturbations.keys()}
 
-    # Get one batch for visualization
-    example_batch = next(iter(test_loader))
-    example_image = example_batch['image'][0].to(device)
-    example_mask = example_batch['mask'][0].to(device)
+def evaluate_robustness():
+    """Evaluate model robustness against different perturbations"""
+    results = {}
 
-    with torch.no_grad():
-        for pert_name, pert_info in tqdm(perturbations.items(), desc="Evaluating perturbations"):
-            print(f"\nEvaluating {pert_name}")
+    for perturb_type, config in perturbations.items():
+        print(f"\nEvaluating {perturb_type}...")
+        perturb_function = config["function"]
+        dice_scores = []
 
-            # Save example perturbed images
-            fig, axes = plt.subplots(2, 5, figsize=(20, 8))
-            fig.suptitle(f'Examples of {pert_name}')
+        # Create example images for visualization
+        example_images = []
 
-            for idx, value in enumerate(pert_info['values']):
-                # Process entire test set for each perturbation level
-                batch_dice_scores = []
+        for level in config["levels"]:
+            batch_dice_scores = []
 
-                for batch in test_loader:
-                    images = batch['image'].to(device)
-                    masks = batch['mask'].to(device)
+            for batch_idx, batch in enumerate(test_loader):
+                images = batch['image'].to(device)
+                masks = batch['mask'].to(device)
 
-                    # Apply perturbation
-                    perturbed_images = torch.stack([
-                        pert_info['func'](img, value) for img in images
-                    ]).to(device)
+                # Apply perturbation
+                perturbed_images = perturb_function(images, level)
 
-                    # Get predictions
+                # Save first batch's first image as example
+                if batch_idx == 0:
+                    example_images.append(perturbed_images[0].cpu())
+
+                # Get predictions
+                with torch.no_grad():
                     outputs = model(perturbed_images)
                     preds = torch.argmax(outputs, dim=1)
 
-                    # Calculate Dice score
-                    batch_dice = calculate_dice_score(preds, masks)
-                    batch_dice_scores.append(batch_dice)
+                # Calculate Dice score for each class
+                for class_idx in range(3):  # background, cat, dog
+                    pred_mask = (preds == class_idx)
+                    target_mask = (masks == class_idx)
 
-                # Record mean Dice score for this perturbation level
-                mean_dice = np.mean(batch_dice_scores)
-                results[pert_name]['dice_scores'].append(mean_dice)
+                    intersection = (pred_mask & target_mask).sum().float()
+                    union = pred_mask.sum() + target_mask.sum()
 
-                # Save example image for visualization
-                if idx < 10:  # Save first 10 examples
-                    perturbed_example = pert_info['func'](example_image, value)
-                    ax = axes[idx // 5, idx % 5]
-                    ax.imshow(perturbed_example.cpu().permute(1, 2, 0))
-                    ax.set_title(f'Value: {value:.2f}\nDice: {mean_dice:.3f}')
-                    ax.axis('off')
+                    if union > 0:
+                        dice = (2 * intersection) / (union + 1e-6)
+                        batch_dice_scores.append(dice.item())
 
-            plt.tight_layout()
-            plt.savefig(os.path.join(save_dir, f'{pert_name}_examples.png'))
-            plt.close()
+            # Average Dice score for this perturbation level
+            avg_dice = np.mean(batch_dice_scores)
+            dice_scores.append(avg_dice)
+            print(f"Level {level}: Mean Dice = {avg_dice:.4f}")
 
-            # Plot Dice scores
-            plt.figure(figsize=(10, 6))
-            plt.plot(pert_info['values'], results[pert_name]['dice_scores'], '-o')
-            plt.title(f'Mean Dice Score vs {pert_name}')
-            plt.xlabel('Perturbation Value')
-            plt.ylabel('Mean Dice Score')
-            plt.grid(True)
-            plt.savefig(os.path.join(save_dir, f'{pert_name}_plot.png'))
-            plt.close()
+        results[perturb_type] = {
+            "scores": dice_scores,
+            "levels": config["levels"],
+            "examples": example_images
+        }
 
-    # Save numerical results
-    with open(os.path.join(save_dir, 'robustness_results.json'), 'w') as f:
-        json.dump(results, f, indent=4)
+        # Plot and save example images
+        plot_example_perturbations(perturb_type, example_images, config["levels"])
+
+    # Plot overall results
+    plot_robustness_results(results)
 
     return results
 
 
-def main():
-    # Setup
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    save_dir = 'robustness_results'
-    os.makedirs(save_dir, exist_ok=True)
+def plot_example_perturbations(perturb_type, images, levels):
+    """Plot example images for each perturbation level"""
+    n_examples = len(images)
+    fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+    axes = axes.ravel()
 
-    # Load model
-    model = UNet(n_channels=3, n_classes=3).to(device)
-    checkpoint = torch.load('/home/yashagarwal/CV_Yash/results/unet2/best_model.pth')  # Update path as needed
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
+    for i in range(min(n_examples, 10)):
+        ax = axes[i]
+        img = images[i].permute(1, 2, 0).numpy()
+        ax.imshow(img)
+        ax.set_title(f'Level: {levels[i]}')
+        ax.axis('off')
 
-    # Create test dataset and loader
-    test_dataset = PetSegmentationDataset(
-        root_dir='./Dataset',  # Update path as needed
-        split='test',
-        img_size=(256, 256),
-        augment=False
-    )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=8,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
-
-    # Run robustness evaluation
-    results = evaluate_robustness(model, test_loader, device, save_dir)
-
-    print("\nRobustness evaluation completed!")
-    print(f"Results saved to: {save_dir}")
+    plt.suptitle(f'{perturb_type} Examples')
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f'{perturb_type.lower().replace(" ", "_")}_examples.png'))
+    plt.close()
 
 
-if __name__ == '__main__':
-    main()
+def plot_robustness_results(results):
+    """Plot robustness evaluation results"""
+    plt.figure(figsize=(12, 8))
+
+    for perturb_type, data in results.items():
+        plt.plot(data["levels"], data["scores"], marker='o', label=perturb_type)
+
+    plt.xlabel('Perturbation Level')
+    plt.ylabel('Mean Dice Score')
+    plt.title('Model Robustness Analysis')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'robustness_analysis.png'))
+    plt.close()
+
+
+if __name__ == "__main__":
+    results = evaluate_robustness()
+
+    # Save numerical results
+    with open(os.path.join(save_dir, 'robustness_results.txt'), 'w') as f:
+        for perturb_type, data in results.items():
+            f.write(f"\n{perturb_type}:\n")
+            for level, score in zip(data["levels"], data["scores"]):
+                f.write(f"Level {level}: {score:.4f}\n")

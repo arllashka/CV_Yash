@@ -125,8 +125,8 @@ def main():
 
     # Load best model for evaluation
     best_model_path = os.path.join(save_dir, 'models', 'best_model.pth')
-    checkpoint = torch.load(best_model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    checkpoint = torch.load(best_model_path, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
     # Calculate and save final metrics
     print("\nCalculating final metrics...")

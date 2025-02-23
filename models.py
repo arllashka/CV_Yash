@@ -365,7 +365,7 @@ class CLIPSegmentation(nn.Module):
         super().__init__()
 
         self.clip_model, _ = clip.load("ViT-B/32", device='cpu')  # Can be moved to GPU later
-
+        self.n_classes = n_classes
         for param in self.clip_model.parameters():
             param.requires_grad = False
 

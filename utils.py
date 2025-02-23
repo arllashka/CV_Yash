@@ -6,6 +6,7 @@ from typing import Dict, Optional
 import json
 from datetime import datetime
 from point_unet import PointUNet
+from models import PointUNet
 
 
 def save_plot(

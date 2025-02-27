@@ -369,7 +369,7 @@ class CLIPSegmentation(nn.Module):
         for param in self.clip_model.parameters():
             param.requires_grad = False
 
-        self.feature_dim = self.clip_model.visual.conv1.out_channels  # This should be 768
+        self.feature_dim = self.clip_model.visual.output_dim
 
         self.decoder = CLIPSegmentationDecoder(
             in_channels=self.feature_dim,
@@ -379,8 +379,10 @@ class CLIPSegmentation(nn.Module):
     def forward(self, x):
         x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
         with torch.no_grad():
-            spatial_features = self.clip_model.visual.conv1(x)  # [B, 768, 7, 7]
-            features = spatial_features
+            conv_features = self.clip_model.visual.conv1(x)
+            features = conv_features
+
         out = self.decoder(features)
+
         out = F.interpolate(out, size=x.shape[2:], mode='bilinear', align_corners=False)
         return out

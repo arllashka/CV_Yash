@@ -364,25 +364,35 @@ class CLIPSegmentation(nn.Module):
     def __init__(self, n_classes=3):
         super().__init__()
 
+        # Load CLIP model
         self.clip_model, _ = clip.load("ViT-B/32", device='cpu')  # Can be moved to GPU later
         self.n_classes = n_classes
         for param in self.clip_model.parameters():
             param.requires_grad = False
 
+        # Get CLIP's feature dimension (512 for ViT-B/32)
         self.feature_dim = self.clip_model.visual.output_dim
 
+        # Decoder
         self.decoder = CLIPSegmentationDecoder(
             in_channels=self.feature_dim,
             n_classes=n_classes
         )
 
     def forward(self, x):
-        x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+        # Get CLIP features
         with torch.no_grad():
-            conv_features = self.clip_model.visual.conv1(x)
-            features = conv_features
+            # Ensure input is in CLIP's expected format
+            x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+            features = self.clip_model.encode_image(x)  # [B, 512]
 
+            # Reshape features to spatial form
+            features = features.view(-1, self.feature_dim, 1, 1)  # [B, 512, 1, 1]
+            features = features.expand(-1, -1, 7, 7)  # [B, 512, 7, 7]
+
+        # Decode features to segmentation map
         out = self.decoder(features)
 
+        # Resize to input resolution
         out = F.interpolate(out, size=x.shape[2:], mode='bilinear', align_corners=False)
         return out

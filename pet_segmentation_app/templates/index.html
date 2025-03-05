@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Pet Segmentation</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>Interactive Pet Segmentation</h1>
+            <p>Segment cats and dogs with different prompt types</p>
+        </header>
+
+        <main>
+            <div class="controls">
+                <div class="prompt-selector">
+                    <h2>Prompt Type</h2>
+                    <div class="prompt-buttons">
+                        <button id="point-prompt" class="prompt-btn active">
+                            <i class="fas fa-mouse-pointer"></i>
+                            <span>Point</span>
+                        </button>
+                        <button id="scribble-prompt" class="prompt-btn">
+                            <i class="fas fa-pencil-alt"></i>
+                            <span>Scribble</span>
+                        </button>
+                        <button id="box-prompt" class="prompt-btn">
+                            <i class="far fa-square"></i>
+                            <span>Box</span>
+                        </button>
+                        <button id="text-prompt" class="prompt-btn">
+                            <i class="fas fa-font"></i>
+                            <span>Text</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="upload-container">
+                    <h2>Upload Image</h2>
+                    <div class="upload-box" id="upload-box">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <p>Drag & drop an image or click to browse</p>
+                        <input type="file" id="file-input" accept="image/*" hidden>
+                    </div>
+                </div>
+
+                <div class="text-prompt-container" id="text-prompt-container" style="display: none;">
+                    <h2>Text Prompt</h2>
+                    <div class="text-input-wrapper">
+                        <input type="text" id="text-input" placeholder="Enter: cat or dog">
+                        <button id="text-submit-btn">Generate</button>
+                    </div>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="reset-btn" class="btn secondary-btn">
+                        <i class="fas fa-undo"></i>
+                        Reset
+                    </button>
+                    <button id="generate-btn" class="btn primary-btn" disabled>
+                        <i class="fas fa-magic"></i>
+                        Generate
+                    </button>
+                </div>
+
+                <div class="prompt-instructions">
+                    <h3>Instructions</h3>
+                    <div id="point-instructions" class="instruction-set">
+                        <p>Click on a pet to segment it</p>
+                    </div>
+                    <div id="scribble-instructions" class="instruction-set" style="display: none;">
+                        <p>Click multiple points on a pet, then click "Generate"</p>
+                    </div>
+                    <div id="box-instructions" class="instruction-set" style="display: none;">
+                        <p>Click two points to create a bounding box around a pet</p>
+                    </div>
+                    <div id="text-instructions" class="instruction-set" style="display: none;">
+                        <p>Type "cat" or "dog" and click "Generate"</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="visualization">
+                <div class="canvas-container">
+                    <canvas id="input-canvas"></canvas>
+                    <div class="loading-overlay" id="loading-overlay">
+                        <div class="spinner"></div>
+                        <p>Processing...</p>
+                    </div>
+                </div>
+                <div class="color-legend">
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: rgba(255, 0, 0, 0.5);"></div>
+                        <span>Cat</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: rgba(0, 0, 255, 0.5);"></div>
+                        <span>Dog</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Pet Segmentation App - Computer Vision Mini-Project</p>
+        </footer>
+    </div>
+
+    <!-- Sample image selection modal -->
+    <div class="modal" id="sample-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Choose a sample image</h2>
+                <span class="close-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="sample-images">
+                    <div class="sample-image" data-src="/static/samples/cat1.jpg">
+                        <img src="/static/samples/cat1.jpg" alt="Cat sample">
+                        <p>Cat 1</p>
+                    </div>
+                    <div class="sample-image" data-src="/static/samples/cat2.jpg">
+                        <img src="/static/samples/cat2.jpg" alt="Cat sample">
+                        <p>Cat 2</p>
+                    </div>
+                    <div class="sample-image" data-src="/static/samples/dog1.jpg">
+                        <img src="/static/samples/dog1.jpg" alt="Dog sample">
+                        <p>Dog 1</p>
+                    </div>
+                    <div class="sample-image" data-src="/static/samples/dog2.jpg">
+                        <img src="/static/samples/dog2.jpg" alt="Dog sample">
+                        <p>Dog 2</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button id="sample-btn" class="floating-btn">
+        <i class="fas fa-images"></i>
+        <span>Sample Images</span>
+    </button>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
